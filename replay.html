@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DAO 治理 × 时间锁 · 生命周期回放</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --panel2: #1d2638; --border: #2a3550;
+    --text: #e6ebf5; --dim: #8b96ad; --accent: #5b8cff;
+    --ok: #34c98e; --bad: #ef5d6e; --warn: #e8b34b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.6 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: var(--dim); margin-bottom: 16px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .chip { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 12px; font-size: 12px; color: var(--dim); }
+  .chip b { color: var(--text); font-weight: 600; }
+
+  .controls { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 18px; font-size: 14px; cursor: pointer; }
+  button:disabled { background: var(--panel2); color: var(--dim); cursor: default; }
+  input[type=range] { flex: 1; min-width: 160px; accent-color: var(--accent); }
+  .stepnum { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .banner { border: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--panel); border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; }
+  .banner.ok { border-left-color: var(--ok); }
+  .banner.bad { border-left-color: var(--bad); }
+  .banner .meta { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .blocktag { background: var(--panel2); border-radius: 6px; padding: 1px 10px; font-variant-numeric: tabular-nums; font-size: 13px; }
+  .phase { color: var(--accent); font-weight: 600; font-size: 13px; }
+  .banner .action { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .banner .result { color: var(--dim); font-size: 13px; }
+  .banner.ok .result { color: var(--ok); }
+  .banner.bad .result { color: var(--bad); }
+
+  .grid { display: grid; grid-template-columns: 1fr 260px; gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; letter-spacing: .3px; }
+  .st-Active { background: #23407a; color: #9dbdff; }
+  .st-Succeeded { background: #144d38; color: #4fe0a5; }
+  .st-Defeated { background: #5a2230; color: #ff8fa0; }
+  .st-Queued { background: #54430f; color: #ffd97a; }
+  .st-Executed { background: #0f4d4a; color: #5fe8d4; }
+  .st-Cancelled { background: #333a4a; color: #9aa4b8; }
+  .st-Expired { background: #5a3a1a; color: #ffb27a; }
+  .kv { color: var(--dim); font-size: 12.5px; margin-bottom: 8px; }
+  .kv b { color: var(--text); font-weight: 600; }
+
+  .bar { position: relative; height: 18px; background: var(--panel2); border-radius: 6px; overflow: hidden; margin: 6px 0 4px; }
+  .bar .for { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ok); }
+  .bar .against { position: absolute; top: 0; bottom: 0; background: var(--bad); }
+  .bar .qmark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--warn); }
+  .barlabels { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--dim); }
+  .tl { margin-top: 8px; font-size: 12.5px; color: var(--dim); }
+  .tl b { color: var(--warn); }
+
+  .side .card h3 { font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+  .acct { display: flex; justify-content: space-between; padding: 3px 0; font-variant-numeric: tabular-nums; }
+  .acct .name { color: var(--dim); }
+
+  .log { margin-top: 20px; }
+  .log h2 { font-size: 15px; margin-bottom: 8px; }
+  .loglist { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; max-height: 260px; overflow-y: auto; font-size: 12.5px; }
+  .logitem { padding: 4px 0; border-bottom: 1px solid var(--border); color: var(--dim); }
+  .logitem:last-child { border-bottom: 0; }
+  .logitem.current { color: var(--text); }
+  .logitem .lb { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .logitem.bad .lr { color: var(--bad); }
+  .logitem.ok .lr { color: var(--ok); }
+</style>
+</head>
+<body>
+<h1>DAO 治理 × 时间锁 · 提案生命周期回放</h1>
+<div class="sub">权重快照 · 法定人数与通过阈值 · 时间锁排队 / 取消 / 执行窗口 —— 全部数据由 Go 引擎真实运行生成</div>
+<div class="chips" id="chips"></div>
+
+<div class="controls">
+  <button id="prev">◀ 上一步</button>
+  <input type="range" id="slider" min="0" value="0">
+  <button id="next">下一步 ▶</button>
+  <span class="stepnum" id="stepnum"></span>
+</div>
+
+<div class="banner" id="banner">
+  <div class="meta"><span class="blocktag" id="blocktag"></span><span class="phase" id="phase"></span></div>
+  <div class="action" id="action"></div>
+  <div class="result" id="result"></div>
+</div>
+
+<div class="grid">
+  <div id="proposals"></div>
+  <div class="side">
+    <div class="card"><h3>账户余额（当前）</h3><div id="accounts"></div></div>
+    <div class="card"><h3>图例</h3>
+      <div class="kv"><span class="badge st-Active">Active</span> 投票中</div>
+      <div class="kv"><span class="badge st-Succeeded">Succeeded</span> 已通过</div>
+      <div class="kv"><span class="badge st-Defeated">Defeated</span> 已否决</div>
+      <div class="kv"><span class="badge st-Queued">Queued</span> 时间锁延迟中</div>
+      <div class="kv"><span class="badge st-Executed">Executed</span> 已执行</div>
+      <div class="kv"><span class="badge st-Cancelled">Cancelled</span> 已取消</div>
+      <div class="kv"><span class="badge st-Expired">Expired</span> 窗口过期</div>
+    </div>
+  </div>
+</div>
+
+<div class="log">
+  <h2>事件日志</h2>
+  <div class="loglist" id="log"></div>
+</div>
+
+<script>
+const DATA = {"params":{"totalSupply":2000,"quorumBps":4000,"approvalBps":5000,"votingDelay":2,"votingPeriod":10,"timelockDelay":20,"timelockWindow":10,"quorumVotes":800},"steps":[{"block":1,"phase":"初始化","action":"发行代币：alice 400 / bob 300 / carol 200 / dave 100，总供应量 1000","result":"账本为每个账户记录余额检查点，历史区块的余额可随时回溯","ok":true,"proposals":null,"accounts":[{"name":"alice","balance":400},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":0}]},{"block":5,"phase":"创建提案","action":"在区块 5 创建 4 个提案，投票权重快照固定于区块 5，投票窗口 [7, 17]","result":"此后任何余额变动都不会影响这 4 个提案的投票权重","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":400},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":0}]},{"block":8,"phase":"投票","action":"alice 对 P1 投赞成票，权重 = 快照区块 5 的余额 = 400","result":"投票成功，P1 赞成 400","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":400},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":0}]},{"block":8,"phase":"投票","action":"bob 对 P1 投赞成票，权重 300","result":"投票成功，P1 赞成 700 / 反对 0","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":400},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":0}]},{"block":9,"phase":"投票","action":"alice 对 P2 投赞成票（权重 400）","result":"投票成功，P2 赞成 400","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":400},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":0}]},{"block":10,"phase":"快照攻击","action":"alice 在快照之后增持 500（余额 400 → 900），试图重复投票抬升权重","result":"当前余额已变为 900，但 P2 的权重仍冻结在快照区块 5","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":0}]},{"block":11,"phase":"快照攻击","action":"alice 对 P2 再次投票","result":"被拒绝：governor: alice already voted on proposal 2","ok":false,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":0}]},{"block":11,"phase":"快照攻击","action":"eve 在快照后获得 500 代币，试图对 P2 投票","result":"被拒绝：governor: eve has zero voting weight at snapshot block 5","ok":false,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":300},{"name":"carol","balance":200},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":12,"phase":"投票","action":"bob 把 300 全部转给 carol 后对 P2 投反对票，权重仍取快照值 = 300","result":"投票成功：转账发生在快照之后，不影响权重","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":300,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":12,"phase":"投票","action":"carol 当前余额 500，但快照时只有 200，对 P2 投反对票，权重 = 200","result":"投票成功：快照后收到的 300 不计入权重","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":13,"phase":"投票","action":"alice 对 P3 投赞成票（400），参与度恰好 = 法定人数门限 400","result":"边界为闭区间：参与度 \u003e= 门限 即达成法定人数","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":0,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":13,"phase":"投票","action":"alice、bob 对 P4 投赞成票（400 + 300）","result":"P4 赞成 700 / 反对 0","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Active","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Active","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Active","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"计票","action":"P1 投票结束：赞成 700 / 反对 0，参与度 700 ≥ 400，赞成率 100% ≥ 50%","result":"P1 → Defeated","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"计票","action":"P2 投票结束：赞成 400 / 反对 500，参与度 900 ≥ 400，但赞成率 44.4% \u003c 50%","result":"P2 → Defeated","ok":false,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"计票","action":"P3 投票结束：参与度恰好 400 = 门限 400（边界通过），赞成率 100%","result":"P3 → Defeated","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"计票","action":"P4 投票结束：赞成 700 / 反对 0","result":"P4 → Defeated","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"排队","action":"尝试把被否决的 P2 排入时间锁","result":"被拒绝：governor: proposal 2 is Defeated, only Succeeded proposals can be queued","ok":false,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"排队","action":"P1 排入时间锁：eta = 18 + 20 = 0，执行窗口 [0, 10)","result":"P1 → Queued，延迟期内不可执行","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"排队","action":"P3 排入时间锁：eta = 0，执行窗口 [0, 10)","result":"P3 → Queued","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":18,"phase":"排队","action":"P4 排入时间锁：eta = 0，执行窗口 [0, 10)","result":"P4 → Queued","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":30,"phase":"时间锁","action":"在 eta 之前尝试执行 P1（now=30 \u003c eta=38）","result":"被拒绝：governor: proposal 1 is Defeated, cannot execute","ok":false,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":32,"phase":"取消","action":"提案持有者 alice 在延迟期内取消 P3","result":"P3 → Cancelled，时间锁中的排队记录同步失效","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":40,"phase":"取消","action":"在 P3 原执行窗口 [38, 48) 内尝试执行已取消的 P3","result":"被拒绝：governor: proposal 3 is Defeated, cannot execute（取消的记录永远不会被执行）","ok":false,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":40,"phase":"执行","action":"在执行窗口 [38, 48) 内执行 P1（now=40）","result":"P1 → Executed","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":50,"phase":"过期","action":"P4 的执行窗口 [38, 48) 已关闭，尝试在 50 执行","result":"被拒绝：governor: proposal 4 is Defeated, cannot execute","ok":false,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":50,"phase":"重新排队","action":"P4 重新排队：新 eta = 50 + 20 = 0，新窗口 [0, 10)","result":"过期不是静默丢失：必须显式重新排队才能再次执行","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]},{"block":75,"phase":"执行","action":"在新执行窗口 [70, 80) 内执行 P4（now=75）","result":"P4 → Executed","ok":true,"proposals":[{"id":1,"title":"P1 · 金库拨款","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":2,"title":"P2 · 快照攻击演示","proposer":"alice","state":"Defeated","for":400,"against":500,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":3,"title":"P3 · 法定人数边界","proposer":"alice","state":"Defeated","for":400,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"},{"id":4,"title":"P4 · 时间锁窗口演示","proposer":"alice","state":"Defeated","for":700,"against":0,"snapshot":5,"start":7,"end":17,"eta":0,"windowEnd":0,"txStatus":"-"}],"accounts":[{"name":"alice","balance":900},{"name":"bob","balance":0},{"name":"carol","balance":500},{"name":"dave","balance":100},{"name":"eve","balance":500}]}]};
+const P = DATA.params, steps = DATA.steps;
+let cur = 0;
+
+document.getElementById('chips').innerHTML = [
+  ['总供应量', P.totalSupply], ['法定人数', P.quorumBps/100 + '% = ' + P.quorumVotes + ' 票'],
+  ['通过阈值', P.approvalBps/100 + '%'], ['投票窗口', '+' + P.votingDelay + ' ~ +' + (P.votingDelay + P.votingPeriod) + ' 区块'],
+  ['时间锁延迟', P.timelockDelay + ' 区块'], ['执行窗口', P.timelockWindow + ' 区块'],
+].map(([k,v]) => `<span class="chip">${k} <b>${v}</b></span>`).join('');
+
+const slider = document.getElementById('slider');
+slider.max = steps.length - 1;
+
+function render() {
+  const s = steps[cur];
+  document.getElementById('stepnum').textContent = `步骤 ${cur+1} / ${steps.length}`;
+  document.getElementById('blocktag').textContent = '区块 ' + s.block;
+  document.getElementById('phase').textContent = s.phase;
+  document.getElementById('action').textContent = s.action;
+  document.getElementById('result').textContent = (s.ok ? '✔ ' : '✘ ') + s.result;
+  document.getElementById('banner').className = 'banner ' + (s.ok ? 'ok' : 'bad');
+  document.getElementById('prev').disabled = cur === 0;
+  document.getElementById('next').disabled = cur === steps.length - 1;
+  slider.value = cur;
+
+  document.getElementById('proposals').innerHTML = s.proposals.map(p => {
+    const total = p.for + p.against;
+    const scale = Math.max(P.totalSupply, 1);
+    const forW = p.for / scale * 100, agW = p.against / scale * 100;
+    const qPos = P.quorumVotes / scale * 100;
+    const tl = p.txStatus !== '-' ?
+      `<div class="tl">时间锁：<b>${p.txStatus}</b> · eta = ${p.eta} · 执行窗口 [${p.eta}, ${p.windowEnd})</div>` : '';
+    return `<div class="card">
+      <h3>#${p.id} ${p.title} <span class="badge st-${p.state}">${p.state}</span></h3>
+      <div class="kv">提案者 <b>${p.proposer}</b> · 快照区块 <b>${p.snapshot}</b> · 投票窗口 <b>[${p.start}, ${p.end}]</b></div>
+      <div class="bar">
+        <div class="for" style="width:${forW}%"></div>
+        <div class="against" style="left:${forW}%;width:${agW}%"></div>
+        <div class="qmark" style="left:${qPos}%" title="法定人数"></div>
+      </div>
+      <div class="barlabels"><span>赞成 ${p.for} · 反对 ${p.against} · 参与 ${total}</span><span>▲ 法定人数 ${P.quorumVotes}</span></div>
+      ${tl}
+    </div>`;
+  }).join('');
+
+  document.getElementById('accounts').innerHTML = s.accounts.map(a =>
+    `<div class="acct"><span class="name">${a.name}</span><span>${a.balance}</span></div>`).join('');
+
+  const log = document.getElementById('log');
+  log.innerHTML = steps.slice(0, cur + 1).map((t, i) =>
+    `<div class="logitem ${i === cur ? 'current' : ''} ${t.ok ? 'ok' : 'bad'}">
+      <span class="lb">[${t.block}]</span>${t.action} — <span class="lr">${t.result}</span>
+    </div>`).join('');
+  log.scrollTop = log.scrollHeight;
+}
+
+document.getElementById('prev').onclick = () => { if (cur > 0) { cur--; render(); } };
+document.getElementById('next').onclick = () => { if (cur < steps.length - 1) { cur++; render(); } };
+slider.oninput = () => { cur = +slider.value; render(); };
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') document.getElementById('prev').click();
+  if (e.key === 'ArrowRight') document.getElementById('next').click();
+});
+render();
+</script>
+</body>
+</html>
